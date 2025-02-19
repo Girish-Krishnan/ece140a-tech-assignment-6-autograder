@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+
+# Exit if any command fails
+# set -e
+
+# Copy student's files from submission directory to source directory
+cp -r /autograder/submission/* /autograder/source/
+
+cd /autograder/source
+
+# Load environment variables
+export $(cat /autograder/source/.env | xargs)
+
+# Modify the BASE_TOPIC environment variable to prepend a random number to it, so that MQTT topics are unique
+export BASE_TOPIC="${BASE_TOPIC}_$(shuf -i 1-1000 -n 1)"
+
+touch /autograder/source/fastapi.log
+touch /autograder/source/mysql.log
+
+# Start MySQL server
+mysqld --user=mysql > /autograder/source/mysql.log 2>&1 &
+MYSQL_PID=$!
+echo "MySQL server started with PID=${MYSQL_PID}"
+
+# Wait for MySQL to be ready
+for i in {1..30}; do
+    if mysqladmin ping -h localhost --silent; then
+        break
+    fi
+    sleep 1
+    if [ $i -eq 30 ]; then
+        echo "MySQL failed to start. Here are the logs:"
+        cat /autograder/source/mysql.log
+        val=$(sed -z 's/\n/\\n/g; s/..$//' /autograder/source/mysql.log)
+        val=${val//\"/\\\"}
+        val=${val//\'/\\\"}
+        echo $val
+        cat > /autograder/results/results.json << EOL
+
+            {
+                "tests": [
+                    {
+                        "name": "MySQL server failed to start. Here are the logs:",
+                        "score": 0,
+                        "max_score": 0,
+                        "status": "failed",
+                        "output": "$val"
+                    }
+                ],
+                "leaderboard": [],
+                "visibility": "visible",
+                "execution_time": "0",
+                "score": 0
+            }
+EOL
+        exit 0
+    fi
+done
+
+# Initialize MySQL database and user using environment variables
+mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASSWORD';"
+mysql -u root -p$MYSQL_ROOT_PASSWORD -e "CREATE DATABASE IF NOT EXISTS $MYSQL_DATABASE;"
+mysql -u root -p$MYSQL_ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS '$MYSQL_USER'@'localhost' IDENTIFIED BY '$MYSQL_PASSWORD';"
+mysql -u root -p$MYSQL_ROOT_PASSWORD -e "GRANT ALL PRIVILEGES ON $MYSQL_DATABASE.* TO '$MYSQL_USER'@'localhost';"
+mysql -u root -p$MYSQL_ROOT_PASSWORD -e "FLUSH PRIVILEGES;"
+
+# Start FastAPI server in the background
+if [ -f "app/main.py" ]; then
+    # Export environment variables for Python process
+    export MYSQL_ROOT_PASSWORD
+    export MYSQL_DATABASE
+    export MYSQL_USER
+    export MYSQL_PASSWORD
+    export MYSQL_HOST
+
+    python3 -m app.main > /autograder/source/fastapi.log 2>&1 &
+    SERVER_PID=$!
+    echo "FastAPI server started with PID=${SERVER_PID}"
+else
+    echo "FastAPI server file not found. Here are the logs:"
+    cat /autograder/source/fastapi.log
+    val=$(sed -z 's/\n/\\n/g; s/..$//' /autograder/source/fastapi.log)
+    val=${val//\"/\\\"}
+    val=${val//\'/\\\"}
+    echo $val
+    cat > /autograder/results/results.json << EOL
+        {"visibility": "visible",
+            "tests": [
+                {
+                    "score": 0.0,
+                    "max_score": 0.0,
+                    "status": "failed",
+                    "name": "Server failed to start. Here are the logs.",
+                    "output": "$val"
+                }
+            ]
+        }
+EOL
+    # Kill MySQL before exiting
+    kill $MYSQL_PID
+    exit 0
+fi
+
+echo "Current directory (PWD var): ${PWD}"
+
+# Wait for FastAPI server to be ready
+for i in {1..30}; do
+    if curl -s http://localhost:6543/docs > /dev/null; then
+        break
+    fi
+    sleep 1
+    if [ $i -eq 30 ]; then
+            cat /autograder/source/fastapi.log
+            val=$(sed -z 's/\n/\\n/g; s/..$//' /autograder/source/fastapi.log)
+            val=${val//\"/\\\"}
+            val=${val//\'/\\\"}
+            echo val
+            cat > /autograder/results/results.json << EOL
+            {"visibility": "visible",
+                "tests": [
+                    {
+                        "score": 0.0,
+                        "max_score": 0.0,
+                        "status": "failed",
+                        "name": "Server failed to start. Here are the logs.",
+                        "output": "$val"
+                    }
+                ]
+            }
+EOL
+        # Kill MySQL before exiting
+        kill $MYSQL_PID
+        exit 0
+    fi
+done
+
+# Start MQTT data receiver and sender in the background
+if [ -f "Server/main.py" ]; then
+    python3 -m Server.main > /autograder/source/mqtt_data_receiver.log 2>&1 &
+    MQTT_PID=$!
+    echo "MQTT data receiver + sender started with PID=${MQTT_PID}"
+else
+    echo "MQTT data receiver file not found. Do you have a file called main.py in the Server directory? Does it contain all your MQTT code?"
+fi
+
+# Run the tests and save results
+python3 test_main.py
+
+# Kill servers + MQTT
+kill $SERVER_PID
+kill $MYSQL_PID
+kill $MQTT_PID

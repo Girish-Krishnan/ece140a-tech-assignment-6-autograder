@@ -1,0 +1,16 @@
+fastapi
+jinja2
+uvicorn
+pytest
+requests
+python-multipart
+gradescope-utils
+pytest-json-report
+playwright
+pytest-playwright
+gradescope-utils
+pydantic
+mysql-connector-python
+pandas
+python-dotenv
+paho-mqtt
