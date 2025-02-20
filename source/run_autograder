@@ -11,11 +11,9 @@ cd /autograder/source
 # Load environment variables
 export $(cat /autograder/source/.env | xargs)
 
-# Modify the BASE_TOPIC environment variable to prepend a random number to it, so that MQTT topics are unique
-export BASE_TOPIC="${BASE_TOPIC}_$(shuf -i 1-1000 -n 1)"
-
 touch /autograder/source/fastapi.log
 touch /autograder/source/mysql.log
+touch /autograder/source/mqtt_data_receiver.log
 
 # Start MySQL server
 mysqld --user=mysql > /autograder/source/mysql.log 2>&1 &
@@ -142,6 +140,42 @@ if [ -f "Server/main.py" ]; then
 else
     echo "MQTT data receiver file not found. Do you have a file called main.py in the Server directory? Does it contain all your MQTT code?"
 fi
+
+# Wait for MQTT data receiver to be ready
+echo "Waiting for MQTT data receiver to be ready..."
+for i in {1..30}; do
+    if ps -p $MQTT_PID > /dev/null; then
+        break
+    fi
+    sleep 1
+    if [ $i -eq 30 ]; then
+        echo "MQTT script crashed. Here are the logs:"
+        cat /autograder/source/mqtt_data_receiver.log
+        val=$(sed -z 's/\n/\\n/g; s/..$//' /autograder/source/mqtt_data_receiver.log)
+        val=${val//\"/\\\"}
+        val=${val//\'/\\\"}
+        echo $val
+        cat > /autograder/results/results.json << EOL
+            {"visibility": "visible",
+                "tests": [
+                    {
+                        "score": 0.0,
+                        "max_score": 0.0,
+                        "status": "failed",
+                        "name": "MQTT script failed. Here are the logs:",
+                        "output": "$val"
+                    }
+                ]
+            }
+EOL
+        # Kill servers before exiting
+        kill $SERVER_PID
+        kill $MYSQL_PID
+        exit 0
+    fi
+done
+
+
 
 # Run the tests and save results
 python3 test_main.py

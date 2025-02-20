@@ -142,6 +142,7 @@ else
 fi
 
 # Wait for MQTT data receiver to be ready
+echo "Waiting for MQTT data receiver to be ready..."
 for i in {1..30}; do
     if ps -p $MQTT_PID > /dev/null; then
         break
